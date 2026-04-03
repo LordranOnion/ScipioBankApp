@@ -2,11 +2,11 @@
 {% block content %}
 <section class="hero">
     <div>
-        <h1>Scipio Bank Federation</h1>
-        <p>Track each family member's money, income, and expenses.</p>
+        <h1>Scipio Bank</h1>
+        <p>Track each family member, their bank accounts, and their balances in one place.</p>
     </div>
     <div class="summary-card big">
-        <span class="label">Family balance</span>
+        <span class="label">Family total balance</span>
         <span class="value">€ {{ '%.2f'|format(family_total) }}</span>
     </div>
 </section>
@@ -41,12 +41,24 @@
                 <article class="member-card">
                     <div class="member-top">
                         <div>
-                            <h3><a href="{{ url_for('member_detail', member_id=item.member.id) }}">{{ item.member.full_name }}</a></h3>
-                            <p>{{ item.member.relation or 'No relation set' }}</p>
+                            <h3>
+                                <a href="{{ url_for('member_detail', member_id=item.member.id) }}">
+                                    {{ item.member.full_name }}
+                                </a>
+                            </h3>
+                            <p>
+                                {{ item.member.relation or 'No relation set' }}
+                                • {{ item.summary.accounts_count }} bank account(s)
+                            </p>
                         </div>
                         <div class="pill">{{ item.member.created_at[:10] }}</div>
                     </div>
+
                     <div class="mini-stats">
+                        <div>
+                            <span>Initial total</span>
+                            <strong>€ {{ '%.2f'|format(item.summary.initial_balance_total) }}</strong>
+                        </div>
                         <div>
                             <span>Income</span>
                             <strong>€ {{ '%.2f'|format(item.summary.total_income) }}</strong>
@@ -60,9 +72,10 @@
                             <strong>€ {{ '%.2f'|format(item.summary.balance) }}</strong>
                         </div>
                     </div>
+
                     <div class="card-actions">
                         <a class="button-link" href="{{ url_for('member_detail', member_id=item.member.id) }}">Open profile</a>
-                        <form method="post" action="{{ url_for('delete_member', member_id=item.member.id) }}" onsubmit="return confirm('Delete this member and all transactions?');">
+                        <form method="post" action="{{ url_for('delete_member', member_id=item.member.id) }}" onsubmit="return confirm('Delete this member and all accounts and transactions?');">
                             <button type="submit" class="danger ghost">Delete</button>
                         </form>
                     </div>

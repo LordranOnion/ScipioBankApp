@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="hero">
+    <div>
+        <h1>Scipio Bank Federation</h1>
+        <p>Track each family member's money, income, and expenses.</p>
+    </div>
+    <div class="summary-card big">
+        <span class="label">Family balance</span>
+        <span class="value">€ {{ '%.2f'|format(family_total) }}</span>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-header">
+        <h2>Add new family member</h2>
+    </div>
+    <form method="post" action="{{ url_for('add_member') }}" class="grid-form">
+        <label>
+            <span>Full name</span>
+            <input type="text" name="full_name" placeholder="e.g. Maria Papadopoulou" required>
+        </label>
+        <label>
+            <span>Relation</span>
+            <input type="text" name="relation" placeholder="e.g. Mother, Son, Partner">
+        </label>
+        <div class="form-actions">
+            <button type="submit">Add member</button>
+        </div>
+    </form>
+</section>
+
+<section class="panel">
+    <div class="panel-header">
+        <h2>Family members</h2>
+    </div>
+
+    {% if member_cards %}
+        <div class="card-grid">
+            {% for item in member_cards %}
+                <article class="member-card">
+                    <div class="member-top">
+                        <div>
+                            <h3><a href="{{ url_for('member_detail', member_id=item.member.id) }}">{{ item.member.full_name }}</a></h3>
+                            <p>{{ item.member.relation or 'No relation set' }}</p>
+                        </div>
+                        <div class="pill">{{ item.member.created_at[:10] }}</div>
+                    </div>
+                    <div class="mini-stats">
+                        <div>
+                            <span>Income</span>
+                            <strong>€ {{ '%.2f'|format(item.summary.total_income) }}</strong>
+                        </div>
+                        <div>
+                            <span>Expenses</span>
+                            <strong>€ {{ '%.2f'|format(item.summary.total_expenses) }}</strong>
+                        </div>
+                        <div>
+                            <span>Balance</span>
+                            <strong>€ {{ '%.2f'|format(item.summary.balance) }}</strong>
+                        </div>
+                    </div>
+                    <div class="card-actions">
+                        <a class="button-link" href="{{ url_for('member_detail', member_id=item.member.id) }}">Open profile</a>
+                        <form method="post" action="{{ url_for('delete_member', member_id=item.member.id) }}" onsubmit="return confirm('Delete this member and all transactions?');">
+                            <button type="submit" class="danger ghost">Delete</button>
+                        </form>
+                    </div>
+                </article>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <p>No family members yet. Add your first one above.</p>
+        </div>
+    {% endif %}
+</section>
+{% endblock %}

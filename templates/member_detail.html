@@ -1,0 +1,104 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="hero member-hero">
+    <div>
+        <a href="{{ url_for('index') }}" class="back-link">← Back to dashboard</a>
+        <h1>{{ member.full_name }}</h1>
+        <p>{{ member.relation or 'Family member' }}</p>
+    </div>
+</section>
+
+<section class="stats-grid">
+    <article class="summary-card">
+        <span class="label">Current balance</span>
+        <span class="value">€ {{ '%.2f'|format(summary.balance) }}</span>
+    </article>
+    <article class="summary-card">
+        <span class="label">Total income</span>
+        <span class="value">€ {{ '%.2f'|format(summary.total_income) }}</span>
+    </article>
+    <article class="summary-card">
+        <span class="label">Total expenses</span>
+        <span class="value">€ {{ '%.2f'|format(summary.total_expenses) }}</span>
+    </article>
+    <article class="summary-card">
+        <span class="label">This month expenses</span>
+        <span class="value">€ {{ '%.2f'|format(summary.month_expenses) }}</span>
+    </article>
+</section>
+
+<section class="panel">
+    <div class="panel-header">
+        <h2>Transactions</h2>
+        <button class="button-link" onclick="document.getElementById('tx-modal').showModal()">+ Add / Remove money</button>
+    </div>
+
+    {% if transactions %}
+        <div class="transaction-list">
+            {% for tx in transactions %}
+                <article class="transaction-row {{ tx.kind }}">
+                    <div>
+                        <strong>{{ tx.category or ('Income' if tx.kind == 'income' else 'Expense') }}</strong>
+                        <p>{{ tx.note or 'No note' }}</p>
+                    </div>
+                    <div class="tx-meta">
+                        <span>{{ tx.transaction_date }}</span>
+                        <strong>{% if tx.kind == 'income' %}+{% else %}-{% endif %} € {{ '%.2f'|format(tx.amount) }}</strong>
+                    </div>
+                    <form method="post" action="{{ url_for('delete_transaction', transaction_id=tx.id) }}" onsubmit="return confirm('Delete this transaction?');">
+                        <button type="submit" class="ghost">Remove</button>
+                    </form>
+                </article>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <p>No transactions yet. Use the floating button to add the first one.</p>
+        </div>
+    {% endif %}
+</section>
+
+<button class="fab" onclick="document.getElementById('tx-modal').showModal()">+</button>
+
+<dialog id="tx-modal" class="modal">
+    <form method="dialog" class="modal-close-row">
+        <button class="ghost">Close</button>
+    </form>
+
+    <form method="post" action="{{ url_for('add_transaction', member_id=member.id) }}" class="grid-form modal-form">
+        <h2>New transaction</h2>
+
+        <label>
+            <span>Type</span>
+            <select name="kind" required>
+                <option value="income">Income, add money</option>
+                <option value="expense">Expense, remove money</option>
+            </select>
+        </label>
+
+        <label>
+            <span>Category</span>
+            <input type="text" name="category" placeholder="Salary, Rent, Food, Fuel">
+        </label>
+
+        <label>
+            <span>Amount</span>
+            <input type="number" min="0.01" step="0.01" name="amount" placeholder="0.00" required>
+        </label>
+
+        <label>
+            <span>Date</span>
+            <input type="date" name="transaction_date" value="{{ today }}" required>
+        </label>
+
+        <label class="full-width">
+            <span>Note</span>
+            <textarea name="note" rows="3" placeholder="Optional note"></textarea>
+        </label>
+
+        <div class="form-actions full-width">
+            <button type="submit">Save transaction</button>
+        </div>
+    </form>
+</dialog>
+{% endblock %}

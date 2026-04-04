@@ -391,3 +391,135 @@ button.danger {
         grid-template-columns: 1fr;
     }
 }
+
+.tab-strip {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.tab-link {
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: white;
+    color: var(--text);
+    font-weight: 600;
+}
+
+.tab-link.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: rgba(47, 111, 237, 0.25);
+}
+
+.fixed-expense-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+}
+
+.fixed-expense-row {
+    display: grid;
+    grid-template-columns: 1.4fr auto auto;
+    gap: 1rem;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 0.9rem 1rem;
+    background: white;
+}
+
+.fixed-expense-left {
+    display: flex;
+    gap: 0.9rem;
+    align-items: flex-start;
+}
+
+.fixed-expense-left p {
+    margin: 0.25rem 0 0;
+    color: var(--muted);
+}
+
+.fixed-expense-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.45rem;
+}
+
+.check-form {
+    margin-top: 0.2rem;
+}
+
+.check-toggle {
+    position: relative;
+    display: inline-flex;
+    width: 22px;
+    height: 22px;
+    cursor: pointer;
+}
+
+.check-toggle input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.check-visual {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    border: 2px solid var(--border);
+    background: white;
+    display: inline-block;
+    position: relative;
+}
+
+.check-toggle input:checked + .check-visual {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.check-toggle input:checked + .check-visual::after {
+    content: "✓";
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: white;
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.status-pill {
+    padding: 0.3rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.status-pill.paid {
+    background: rgba(12, 140, 99, 0.12);
+    color: var(--income);
+}
+
+.status-pill.unpaid {
+    background: rgba(168, 85, 20, 0.12);
+    color: var(--expense);
+}
+
+.compact-gap {
+    margin-bottom: 1rem;
+}
+
+@media (max-width: 760px) {
+    .fixed-expense-row {
+        grid-template-columns: 1fr;
+    }
+
+    .fixed-expense-right {
+        align-items: flex-start;
+    }
+}

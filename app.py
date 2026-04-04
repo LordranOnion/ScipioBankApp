@@ -57,14 +57,8 @@ def init_db() -> None:
 
 def migrate_legacy_transactions_if_needed() -> None:
     """
-    Migration from old structure:
-    transactions(member_id, kind, category, amount, note, transaction_date, created_at)
-
-    to new structure:
-    transactions(member_id, bank_account_id, kind, category, amount, note, transaction_date, created_at)
-
-    Old transactions are moved into a default bank account called 'Main account'
-    for each member that already had transactions.
+    Migrates old transactions table that did not have bank_account_id.
+    Old transactions are placed into a default account called 'Main account'.
     """
     db = get_db()
 
@@ -74,7 +68,6 @@ def migrate_legacy_transactions_if_needed() -> None:
     if column_exists(db, "transactions", "bank_account_id"):
         return
 
-    # Ensure bank_accounts exists before migration
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS bank_accounts (
@@ -95,11 +88,14 @@ def migrate_legacy_transactions_if_needed() -> None:
     ).fetchall()
 
     account_map: dict[int, int] = {}
+
     for row in members_with_transactions:
         member_id = int(row["member_id"])
+
         existing = db.execute(
             """
-            SELECT id FROM bank_accounts
+            SELECT id
+            FROM bank_accounts
             WHERE member_id = ?
             ORDER BY id ASC
             LIMIT 1
@@ -112,7 +108,9 @@ def migrate_legacy_transactions_if_needed() -> None:
         else:
             cursor = db.execute(
                 """
-                INSERT INTO bank_accounts (member_id, account_name, bank_name, account_identifier, initial_balance)
+                INSERT INTO bank_accounts (
+                    member_id, account_name, bank_name, account_identifier, initial_balance
+                )
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (member_id, "Main account", "Migrated account", None, 0),
@@ -148,10 +146,12 @@ def migrate_legacy_transactions_if_needed() -> None:
     for tx in old_transactions:
         member_id = int(tx["member_id"])
         bank_account_id = account_map[member_id]
+
         db.execute(
             """
-            INSERT INTO transactions_new
-            (id, member_id, bank_account_id, kind, category, amount, note, transaction_date, created_at)
+            INSERT INTO transactions_new (
+                id, member_id, bank_account_id, kind, category, amount, note, transaction_date, created_at
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -176,10 +176,9 @@ def migrate_legacy_transactions_if_needed() -> None:
 def ensure_db_ready() -> None:
     db = get_db()
 
-    if not DATABASE.exists():
+    if not table_exists(db, "family_members"):
         init_db()
     else:
-        # Always ensure latest schema pieces exist
         schema = (BASE_DIR / "schema.sql").read_text(encoding="utf-8")
         db.executescript(schema)
         db.commit()
@@ -207,11 +206,21 @@ def query_all(query: str, params: tuple = ()) -> list[sqlite3.Row]:
 def current_month_bounds() -> tuple[str, str]:
     today = date.today()
     start = today.replace(day=1)
+
     if today.month == 12:
         end = today.replace(year=today.year + 1, month=1, day=1)
     else:
         end = today.replace(month=today.month + 1, day=1)
+
     return start.isoformat(), end.isoformat()
+
+
+def current_month_key() -> str:
+    return date.today().strftime("%Y-%m")
+
+
+def current_month_label() -> str:
+    return date.today().strftime("%B %Y")
 
 
 def calculate_account_summary(account_id: int) -> dict[str, float]:
@@ -328,6 +337,34 @@ def calculate_member_summary(member_id: int) -> dict[str, float | int]:
         "balance": initial_balance_total + total_income - total_expenses,
         "month_income": float(monthly["month_income"]),
         "month_expenses": float(monthly["month_expenses"]),
+    }
+
+
+def calculate_fixed_expense_summary(member_id: int) -> dict[str, float]:
+    db = get_db()
+    month_key = current_month_key()
+
+    row = db.execute(
+        """
+        SELECT
+            COALESCE(SUM(f.amount), 0) AS planned_total,
+            COALESCE(SUM(CASE WHEN s.is_paid = 1 THEN f.amount ELSE 0 END), 0) AS paid_total
+        FROM fixed_expenses f
+        LEFT JOIN fixed_expense_status s
+            ON s.fixed_expense_id = f.id
+           AND s.month_key = ?
+        WHERE f.member_id = ?
+        """,
+        (month_key, member_id),
+    ).fetchone()
+
+    planned_total = float(row["planned_total"])
+    paid_total = float(row["paid_total"])
+
+    return {
+        "planned_total": planned_total,
+        "paid_total": paid_total,
+        "remaining_total": planned_total - paid_total,
     }
 
 
@@ -452,7 +489,14 @@ def member_detail(member_id: int):
     if member is None:
         abort(404)
 
+    active_tab = request.args.get("tab", "transactions")
+    if active_tab not in {"transactions", "fixed"}:
+        active_tab = "transactions"
+
     summary = calculate_member_summary(member_id)
+    fixed_summary = calculate_fixed_expense_summary(member_id)
+    month_key = current_month_key()
+    month_label = current_month_label()
 
     accounts = query_all(
         """
@@ -495,6 +539,33 @@ def member_detail(member_id: int):
         (member_id,),
     )
 
+    fixed_expenses = query_all(
+        """
+        SELECT
+            f.id,
+            f.member_id,
+            f.bank_account_id,
+            f.title,
+            f.amount,
+            f.note,
+            f.created_at,
+            b.account_name,
+            b.bank_name,
+            b.account_identifier,
+            COALESCE(s.is_paid, 0) AS is_paid,
+            s.paid_date,
+            s.transaction_id
+        FROM fixed_expenses f
+        JOIN bank_accounts b ON b.id = f.bank_account_id
+        LEFT JOIN fixed_expense_status s
+            ON s.fixed_expense_id = f.id
+           AND s.month_key = ?
+        WHERE f.member_id = ?
+        ORDER BY f.title COLLATE NOCASE, f.id DESC
+        """,
+        (month_key, member_id),
+    )
+
     return render_template(
         "member_detail.html",
         member=member,
@@ -503,6 +574,10 @@ def member_detail(member_id: int):
         account_cards=account_cards,
         transactions=transactions,
         today=date.today().isoformat(),
+        active_tab=active_tab,
+        fixed_expenses=fixed_expenses,
+        fixed_summary=fixed_summary,
+        month_label=month_label,
     )
 
 
@@ -575,7 +650,199 @@ def add_transaction(member_id: int):
 
     action = "Income added" if kind == "income" else "Expense added"
     flash(f"{action} in account '{account['account_name']}' for {member['full_name']}.", "success")
-    return redirect(url_for("member_detail", member_id=member_id))
+    return redirect(url_for("member_detail", member_id=member_id, tab="transactions"))
+
+
+@app.post("/member/<int:member_id>/fixed-expenses")
+def add_fixed_expense(member_id: int):
+    member = query_one("SELECT id, full_name FROM family_members WHERE id = ?", (member_id,))
+    if member is None:
+        abort(404)
+
+    title = request.form.get("title", "").strip()
+    note = request.form.get("note", "").strip()
+    amount_raw = request.form.get("amount", "").strip()
+    bank_account_id_raw = request.form.get("bank_account_id", "").strip()
+
+    if not title:
+        flash("Please provide a fixed expense title.", "error")
+        return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
+
+    try:
+        amount = round(float(amount_raw), 2)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        flash("Amount must be a positive number.", "error")
+        return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
+
+    try:
+        bank_account_id = int(bank_account_id_raw)
+    except ValueError:
+        flash("Please select a bank account.", "error")
+        return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
+
+    account = query_one(
+        """
+        SELECT id, account_name
+        FROM bank_accounts
+        WHERE id = ? AND member_id = ?
+        """,
+        (bank_account_id, member_id),
+    )
+    if account is None:
+        flash("Selected bank account is not valid for this member.", "error")
+        return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
+
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO fixed_expenses (member_id, bank_account_id, title, amount, note)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (member_id, bank_account_id, title, amount, note or None),
+    )
+    db.commit()
+
+    flash(f"Fixed monthly expense '{title}' added.", "success")
+    return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
+
+
+@app.post("/fixed-expenses/<int:fixed_expense_id>/toggle")
+def toggle_fixed_expense(fixed_expense_id: int):
+    desired_state = request.form.get("desired_state", "").strip().lower()
+    if desired_state not in {"paid", "unpaid"}:
+        flash("Invalid fixed expense action.", "error")
+        return redirect(url_for("index"))
+
+    fixed_expense = query_one(
+        """
+        SELECT
+            f.id,
+            f.member_id,
+            f.bank_account_id,
+            f.title,
+            f.amount,
+            f.note,
+            b.account_name
+        FROM fixed_expenses f
+        JOIN bank_accounts b ON b.id = f.bank_account_id
+        WHERE f.id = ?
+        """,
+        (fixed_expense_id,),
+    )
+    if fixed_expense is None:
+        abort(404)
+
+    db = get_db()
+    month_key = current_month_key()
+    today_iso = date.today().isoformat()
+
+    status = query_one(
+        """
+        SELECT id, is_paid, transaction_id
+        FROM fixed_expense_status
+        WHERE fixed_expense_id = ? AND month_key = ?
+        """,
+        (fixed_expense_id, month_key),
+    )
+
+    if desired_state == "paid":
+        already_paid = False
+        if status is not None and int(status["is_paid"]) == 1 and status["transaction_id"] is not None:
+            tx_exists = query_one(
+                "SELECT id FROM transactions WHERE id = ?",
+                (status["transaction_id"],),
+            )
+            already_paid = tx_exists is not None
+
+        if already_paid:
+            flash("This fixed expense is already marked as paid for this month.", "success")
+            return redirect(url_for("member_detail", member_id=fixed_expense["member_id"], tab="fixed"))
+
+        cursor = db.execute(
+            """
+            INSERT INTO transactions (
+                member_id, bank_account_id, kind, category, amount, note, transaction_date
+            )
+            VALUES (?, ?, 'expense', ?, ?, ?, ?)
+            """,
+            (
+                fixed_expense["member_id"],
+                fixed_expense["bank_account_id"],
+                fixed_expense["title"],
+                fixed_expense["amount"],
+                fixed_expense["note"] or "Monthly fixed expense",
+                today_iso,
+            ),
+        )
+        transaction_id = int(cursor.lastrowid)
+
+        db.execute(
+            """
+            INSERT INTO fixed_expense_status (
+                fixed_expense_id, month_key, is_paid, paid_date, transaction_id
+            )
+            VALUES (?, ?, 1, ?, ?)
+            ON CONFLICT(fixed_expense_id, month_key)
+            DO UPDATE SET
+                is_paid = 1,
+                paid_date = excluded.paid_date,
+                transaction_id = excluded.transaction_id
+            """,
+            (fixed_expense_id, month_key, today_iso, transaction_id),
+        )
+        db.commit()
+
+        flash(
+            f"Marked '{fixed_expense['title']}' as paid in account '{fixed_expense['account_name']}'.",
+            "success",
+        )
+        return redirect(url_for("member_detail", member_id=fixed_expense["member_id"], tab="fixed"))
+
+    # unpaid
+    if status is not None and status["transaction_id"] is not None:
+        db.execute("DELETE FROM transactions WHERE id = ?", (status["transaction_id"],))
+
+    db.execute(
+        """
+        INSERT INTO fixed_expense_status (
+            fixed_expense_id, month_key, is_paid, paid_date, transaction_id
+        )
+        VALUES (?, ?, 0, NULL, NULL)
+        ON CONFLICT(fixed_expense_id, month_key)
+        DO UPDATE SET
+            is_paid = 0,
+            paid_date = NULL,
+            transaction_id = NULL
+        """,
+        (fixed_expense_id, month_key),
+    )
+    db.commit()
+
+    flash(f"Marked '{fixed_expense['title']}' as unpaid for this month.", "success")
+    return redirect(url_for("member_detail", member_id=fixed_expense["member_id"], tab="fixed"))
+
+
+@app.post("/fixed-expenses/<int:fixed_expense_id>/delete")
+def delete_fixed_expense(fixed_expense_id: int):
+    row = query_one(
+        """
+        SELECT id, member_id, title
+        FROM fixed_expenses
+        WHERE id = ?
+        """,
+        (fixed_expense_id,),
+    )
+    if row is None:
+        abort(404)
+
+    db = get_db()
+    db.execute("DELETE FROM fixed_expenses WHERE id = ?", (fixed_expense_id,))
+    db.commit()
+
+    flash(f"Removed fixed expense '{row['title']}'.", "success")
+    return redirect(url_for("member_detail", member_id=row["member_id"], tab="fixed"))
 
 
 @app.post("/transactions/<int:transaction_id>/delete")
@@ -588,11 +855,21 @@ def delete_transaction(transaction_id: int):
         abort(404)
 
     db = get_db()
+    db.execute(
+        """
+        UPDATE fixed_expense_status
+        SET is_paid = 0,
+            paid_date = NULL,
+            transaction_id = NULL
+        WHERE transaction_id = ?
+        """,
+        (transaction_id,),
+    )
     db.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
     db.commit()
 
     flash("Transaction removed.", "success")
-    return redirect(url_for("member_detail", member_id=row["member_id"]))
+    return redirect(url_for("member_detail", member_id=row["member_id"], tab="transactions"))
 
 
 @app.post("/member/<int:member_id>/delete")

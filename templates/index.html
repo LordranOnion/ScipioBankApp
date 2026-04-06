@@ -3,7 +3,7 @@
 <section class="hero">
     <div>
         <h1>Scipio Bank</h1>
-        <p>Track family members, bank accounts, balances, and this month's fixed checklist.</p>
+        <p>Track family members, bank accounts, balances, and the household fixed checklist.</p>
     </div>
     <div class="summary-card big">
         <span class="label">Family total balance</span>
@@ -76,11 +76,8 @@
                             </div>
 
                             <div class="card-actions">
-                                <div class="button-row">
-                                    <a class="button-link" href="{{ url_for('member_detail', member_id=item.member.id) }}">Open profile</a>
-                                    <a class="button-link" href="{{ url_for('manage_fixed_expenses', member_id=item.member.id) }}">Manage fixed expenses</a>
-                                </div>
-                                <form method="post" action="{{ url_for('delete_member', member_id=item.member.id) }}" onsubmit="return confirm('Delete this member and all accounts, fixed expenses and transactions?');">
+                                <a class="button-link" href="{{ url_for('member_detail', member_id=item.member.id) }}">Open profile</a>
+                                <form method="post" action="{{ url_for('delete_member', member_id=item.member.id) }}" onsubmit="return confirm('Delete this member and all accounts and transactions?');">
                                     <button type="submit" class="danger ghost">Delete</button>
                                 </form>
                             </div>
@@ -102,6 +99,7 @@
                     <h2>Fixed expenses checklist</h2>
                     <p class="muted">{{ month_label }}</p>
                 </div>
+                <a class="button-link small" href="{{ url_for('manage_fixed_expenses') }}">Manage</a>
             </div>
 
             <section class="stats-grid compact-gap">
@@ -121,27 +119,18 @@
 
             {% if fixed_panel_items %}
                 <div class="checklist-groups">
-                    {% for group in fixed_panel_items|groupby("full_name") %}
-                        <section class="checklist-group">
-                            <div class="checklist-group-header">
-                                <strong>{{ group.grouper }}</strong>
-                                <a class="button-link small" href="{{ url_for('manage_fixed_expenses', member_id=group.list[0].member_id) }}">Manage</a>
+                    {% for item in fixed_panel_items %}
+                        <div class="checklist-row">
+                            <label class="readonly-check">
+                                <input type="checkbox" disabled {% if item.is_paid %}checked{% endif %}>
+                                <span class="check-visual"></span>
+                            </label>
+
+                            <div class="checklist-text">
+                                <strong>{{ item.title }}</strong>
+                                <span>€ {{ '%.2f'|format(item.amount) }}</span>
                             </div>
-
-                            {% for item in group.list %}
-                                <div class="checklist-row">
-                                    <label class="readonly-check">
-                                        <input type="checkbox" disabled {% if item.is_paid %}checked{% endif %}>
-                                        <span class="check-visual"></span>
-                                    </label>
-
-                                    <div class="checklist-text">
-                                        <strong>{{ item.title }}</strong>
-                                        <span>{{ item.account_name }} • € {{ '%.2f'|format(item.amount) }}</span>
-                                    </div>
-                                </div>
-                            {% endfor %}
-                        </section>
+                        </div>
                     {% endfor %}
                 </div>
             {% else %}

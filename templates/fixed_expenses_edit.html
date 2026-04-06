@@ -2,9 +2,9 @@
 {% block content %}
 <section class="hero member-hero">
     <div>
-        <a href="{{ url_for('manage_fixed_expenses', member_id=fixed_expense.member_id) }}" class="back-link">← Back to fixed expenses</a>
+        <a href="{{ url_for('manage_fixed_expenses') }}" class="back-link">← Back to fixed expenses</a>
         <h1>Edit fixed expense</h1>
-        <p>{{ fixed_expense.full_name }}</p>
+        <p>Household checklist item</p>
     </div>
 </section>
 
@@ -17,19 +17,6 @@
         <label>
             <span>Title</span>
             <input type="text" name="title" value="{{ fixed_expense.title }}" required>
-        </label>
-
-        <label>
-            <span>Bank account</span>
-            <select name="bank_account_id" required>
-                {% for account in accounts %}
-                    <option value="{{ account.id }}" {% if account.id == fixed_expense.bank_account_id %}selected{% endif %}>
-                        {{ account.account_name }}
-                        {% if account.bank_name %} - {{ account.bank_name }}{% endif %}
-                        {% if account.account_identifier %} - {{ account.account_identifier }}{% endif %}
-                    </option>
-                {% endfor %}
-            </select>
         </label>
 
         <label>

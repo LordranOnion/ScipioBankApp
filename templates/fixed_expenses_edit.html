@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="hero member-hero">
+    <div>
+        <a href="{{ url_for('manage_fixed_expenses', member_id=fixed_expense.member_id) }}" class="back-link">← Back to fixed expenses</a>
+        <h1>Edit fixed expense</h1>
+        <p>{{ fixed_expense.full_name }}</p>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-header">
+        <h2>{{ fixed_expense.title }}</h2>
+    </div>
+
+    <form method="post" action="{{ url_for('edit_fixed_expense', fixed_expense_id=fixed_expense.id) }}" class="grid-form">
+        <label>
+            <span>Title</span>
+            <input type="text" name="title" value="{{ fixed_expense.title }}" required>
+        </label>
+
+        <label>
+            <span>Bank account</span>
+            <select name="bank_account_id" required>
+                {% for account in accounts %}
+                    <option value="{{ account.id }}" {% if account.id == fixed_expense.bank_account_id %}selected{% endif %}>
+                        {{ account.account_name }}
+                        {% if account.bank_name %} - {{ account.bank_name }}{% endif %}
+                        {% if account.account_identifier %} - {{ account.account_identifier }}{% endif %}
+                    </option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            <span>Amount</span>
+            <input type="number" step="0.01" min="0.01" name="amount" value="{{ '%.2f'|format(fixed_expense.amount) }}" required>
+        </label>
+
+        <label class="full-width">
+            <span>Note</span>
+            <textarea name="note" rows="3">{{ fixed_expense.note or '' }}</textarea>
+        </label>
+
+        <div class="form-actions">
+            <button type="submit">Save changes</button>
+        </div>
+    </form>
+</section>
+{% endblock %}

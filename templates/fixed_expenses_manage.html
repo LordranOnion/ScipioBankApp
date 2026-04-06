@@ -1,0 +1,115 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="hero member-hero">
+    <div>
+        <a href="{{ url_for('member_detail', member_id=member.id) }}" class="back-link">← Back to profile</a>
+        <h1>Manage fixed expenses</h1>
+        <p>{{ member.full_name }} • {{ month_label }}</p>
+    </div>
+</section>
+
+<section class="stats-grid">
+    <article class="summary-card">
+        <span class="label">Planned this month</span>
+        <span class="value">€ {{ '%.2f'|format(fixed_summary.planned_total) }}</span>
+    </article>
+    <article class="summary-card">
+        <span class="label">Paid this month</span>
+        <span class="value">€ {{ '%.2f'|format(fixed_summary.paid_total) }}</span>
+    </article>
+    <article class="summary-card">
+        <span class="label">Remaining this month</span>
+        <span class="value">€ {{ '%.2f'|format(fixed_summary.remaining_total) }}</span>
+    </article>
+</section>
+
+<section class="panel">
+    <div class="panel-header">
+        <h2>Add fixed expense</h2>
+    </div>
+
+    {% if accounts %}
+        <form method="post" action="{{ url_for('add_fixed_expense', member_id=member.id) }}" class="grid-form">
+            <label>
+                <span>Title</span>
+                <input type="text" name="title" placeholder="Rent, Electricity, Internet" required>
+            </label>
+
+            <label>
+                <span>Bank account</span>
+                <select name="bank_account_id" required>
+                    {% for account in accounts %}
+                        <option value="{{ account.id }}">
+                            {{ account.account_name }}
+                            {% if account.bank_name %} - {{ account.bank_name }}{% endif %}
+                            {% if account.account_identifier %} - {{ account.account_identifier }}{% endif %}
+                        </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                <span>Amount</span>
+                <input type="number" step="0.01" min="0.01" name="amount" placeholder="0.00" required>
+            </label>
+
+            <label class="full-width">
+                <span>Note</span>
+                <textarea name="note" rows="2" placeholder="Optional note"></textarea>
+            </label>
+
+            <div class="form-actions">
+                <button type="submit">Add fixed expense</button>
+            </div>
+        </form>
+    {% else %}
+        <div class="empty-state">
+            <p>Add a bank account first, then create fixed expenses.</p>
+        </div>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <div class="panel-header">
+        <h2>Current fixed expenses</h2>
+    </div>
+
+    {% if fixed_expenses %}
+        <div class="fixed-expense-list">
+            {% for item in fixed_expenses %}
+                <article class="fixed-expense-row">
+                    <div class="fixed-expense-left no-check">
+                        <div>
+                            <strong>{{ item.title }}</strong>
+                            <p class="muted">
+                                Account: {{ item.account_name }}
+                                {% if item.bank_name %} • {{ item.bank_name }}{% endif %}
+                                {% if item.account_identifier %} • {{ item.account_identifier }}{% endif %}
+                            </p>
+                            <p>{{ item.note or 'No note' }}</p>
+                        </div>
+                    </div>
+
+                    <div class="fixed-expense-right">
+                        <strong>€ {{ '%.2f'|format(item.amount) }}</strong>
+                        <span class="status-pill {% if item.is_paid %}paid{% else %}unpaid{% endif %}">
+                            {% if item.is_paid %}Paid this month{% else %}Pending{% endif %}
+                        </span>
+                    </div>
+
+                    <div class="button-row">
+                        <a class="button-link small" href="{{ url_for('edit_fixed_expense', fixed_expense_id=item.id) }}">Edit</a>
+                        <form method="post" action="{{ url_for('delete_fixed_expense', fixed_expense_id=item.id) }}" onsubmit="return confirm('Delete this fixed expense?');">
+                            <button type="submit" class="danger ghost">Remove</button>
+                        </form>
+                    </div>
+                </article>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <p>No fixed expenses yet.</p>
+        </div>
+    {% endif %}
+</section>
+{% endblock %}

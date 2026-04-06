@@ -57,8 +57,14 @@ def init_db() -> None:
 
 def migrate_legacy_transactions_if_needed() -> None:
     """
-    Migrates old transactions table that did not have bank_account_id.
-    Old transactions are placed into a default account called 'Main account'.
+    Migration from old structure:
+    transactions(member_id, kind, category, amount, note, transaction_date, created_at)
+
+    to new structure:
+    transactions(member_id, bank_account_id, kind, category, amount, note, transaction_date, created_at)
+
+    Old transactions are moved into a default bank account called 'Main account'
+    for each member that already had transactions.
     """
     db = get_db()
 
@@ -88,7 +94,6 @@ def migrate_legacy_transactions_if_needed() -> None:
     ).fetchall()
 
     account_map: dict[int, int] = {}
-
     for row in members_with_transactions:
         member_id = int(row["member_id"])
 
@@ -146,7 +151,6 @@ def migrate_legacy_transactions_if_needed() -> None:
     for tx in old_transactions:
         member_id = int(tx["member_id"])
         bank_account_id = account_map[member_id]
-
         db.execute(
             """
             INSERT INTO transactions_new (
@@ -368,6 +372,33 @@ def calculate_fixed_expense_summary(member_id: int) -> dict[str, float]:
     }
 
 
+def calculate_household_fixed_summary() -> dict[str, float]:
+    db = get_db()
+    month_key = current_month_key()
+
+    row = db.execute(
+        """
+        SELECT
+            COALESCE(SUM(f.amount), 0) AS planned_total,
+            COALESCE(SUM(CASE WHEN s.is_paid = 1 THEN f.amount ELSE 0 END), 0) AS paid_total
+        FROM fixed_expenses f
+        LEFT JOIN fixed_expense_status s
+            ON s.fixed_expense_id = f.id
+           AND s.month_key = ?
+        """,
+        (month_key,),
+    ).fetchone()
+
+    planned_total = float(row["planned_total"])
+    paid_total = float(row["paid_total"])
+
+    return {
+        "planned_total": planned_total,
+        "paid_total": paid_total,
+        "remaining_total": planned_total - paid_total,
+    }
+
+
 # -----------------------------
 # Routes
 # -----------------------------
@@ -385,10 +416,36 @@ def index():
         family_total += float(summary["balance"])
         member_cards.append({"member": member, "summary": summary})
 
+    fixed_panel_items = query_all(
+        """
+        SELECT
+            f.id,
+            f.member_id,
+            m.full_name,
+            f.title,
+            f.amount,
+            b.account_name,
+            COALESCE(s.is_paid, 0) AS is_paid
+        FROM fixed_expenses f
+        JOIN family_members m ON m.id = f.member_id
+        JOIN bank_accounts b ON b.id = f.bank_account_id
+        LEFT JOIN fixed_expense_status s
+            ON s.fixed_expense_id = f.id
+           AND s.month_key = ?
+        ORDER BY m.full_name COLLATE NOCASE, f.title COLLATE NOCASE, f.id ASC
+        """,
+        (current_month_key(),),
+    )
+
+    household_fixed_summary = calculate_household_fixed_summary()
+
     return render_template(
         "index.html",
         member_cards=member_cards,
         family_total=family_total,
+        fixed_panel_items=fixed_panel_items,
+        household_fixed_summary=household_fixed_summary,
+        month_label=current_month_label(),
     )
 
 
@@ -474,7 +531,7 @@ def delete_bank_account(account_id: int):
     db.commit()
 
     flash(
-        f"Removed account '{row['account_name']}' from {row['full_name']}. Related transactions were also removed.",
+        f"Removed account '{row['account_name']}' from {row['full_name']}. Related transactions and fixed expenses were also removed.",
         "success",
     )
     return redirect(url_for("member_detail", member_id=row["member_id"]))
@@ -489,14 +546,7 @@ def member_detail(member_id: int):
     if member is None:
         abort(404)
 
-    active_tab = request.args.get("tab", "transactions")
-    if active_tab not in {"transactions", "fixed"}:
-        active_tab = "transactions"
-
     summary = calculate_member_summary(member_id)
-    fixed_summary = calculate_fixed_expense_summary(member_id)
-    month_key = current_month_key()
-    month_label = current_month_label()
 
     accounts = query_all(
         """
@@ -539,31 +589,26 @@ def member_detail(member_id: int):
         (member_id,),
     )
 
-    fixed_expenses = query_all(
+    pending_fixed_expenses = query_all(
         """
         SELECT
             f.id,
-            f.member_id,
-            f.bank_account_id,
             f.title,
             f.amount,
-            f.note,
-            f.created_at,
+            f.bank_account_id,
             b.account_name,
             b.bank_name,
-            b.account_identifier,
-            COALESCE(s.is_paid, 0) AS is_paid,
-            s.paid_date,
-            s.transaction_id
+            b.account_identifier
         FROM fixed_expenses f
         JOIN bank_accounts b ON b.id = f.bank_account_id
         LEFT JOIN fixed_expense_status s
             ON s.fixed_expense_id = f.id
            AND s.month_key = ?
         WHERE f.member_id = ?
-        ORDER BY f.title COLLATE NOCASE, f.id DESC
+          AND COALESCE(s.is_paid, 0) = 0
+        ORDER BY f.title COLLATE NOCASE
         """,
-        (month_key, member_id),
+        (current_month_key(), member_id),
     )
 
     return render_template(
@@ -574,11 +619,229 @@ def member_detail(member_id: int):
         account_cards=account_cards,
         transactions=transactions,
         today=date.today().isoformat(),
-        active_tab=active_tab,
+        pending_fixed_expenses=pending_fixed_expenses,
+    )
+
+
+@app.route("/member/<int:member_id>/fixed-expenses")
+def manage_fixed_expenses(member_id: int):
+    member = query_one(
+        "SELECT id, full_name, relation FROM family_members WHERE id = ?",
+        (member_id,),
+    )
+    if member is None:
+        abort(404)
+
+    accounts = query_all(
+        """
+        SELECT id, account_name, bank_name, account_identifier
+        FROM bank_accounts
+        WHERE member_id = ?
+        ORDER BY id DESC
+        """,
+        (member_id,),
+    )
+
+    fixed_expenses = query_all(
+        """
+        SELECT
+            f.id,
+            f.member_id,
+            f.bank_account_id,
+            f.title,
+            f.amount,
+            f.note,
+            b.account_name,
+            b.bank_name,
+            b.account_identifier,
+            COALESCE(s.is_paid, 0) AS is_paid
+        FROM fixed_expenses f
+        JOIN bank_accounts b ON b.id = f.bank_account_id
+        LEFT JOIN fixed_expense_status s
+            ON s.fixed_expense_id = f.id
+           AND s.month_key = ?
+        WHERE f.member_id = ?
+        ORDER BY f.title COLLATE NOCASE, f.id DESC
+        """,
+        (current_month_key(), member_id),
+    )
+
+    fixed_summary = calculate_fixed_expense_summary(member_id)
+
+    return render_template(
+        "fixed_expenses_manage.html",
+        member=member,
+        accounts=accounts,
         fixed_expenses=fixed_expenses,
         fixed_summary=fixed_summary,
-        month_label=month_label,
+        month_label=current_month_label(),
     )
+
+
+@app.post("/member/<int:member_id>/fixed-expenses")
+def add_fixed_expense(member_id: int):
+    member = query_one("SELECT id, full_name FROM family_members WHERE id = ?", (member_id,))
+    if member is None:
+        abort(404)
+
+    title = request.form.get("title", "").strip()
+    note = request.form.get("note", "").strip()
+    amount_raw = request.form.get("amount", "").strip()
+    bank_account_id_raw = request.form.get("bank_account_id", "").strip()
+
+    if not title:
+        flash("Please provide a fixed expense title.", "error")
+        return redirect(url_for("manage_fixed_expenses", member_id=member_id))
+
+    try:
+        amount = round(float(amount_raw), 2)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        flash("Amount must be a positive number.", "error")
+        return redirect(url_for("manage_fixed_expenses", member_id=member_id))
+
+    try:
+        bank_account_id = int(bank_account_id_raw)
+    except ValueError:
+        flash("Please select a bank account.", "error")
+        return redirect(url_for("manage_fixed_expenses", member_id=member_id))
+
+    account = query_one(
+        """
+        SELECT id
+        FROM bank_accounts
+        WHERE id = ? AND member_id = ?
+        """,
+        (bank_account_id, member_id),
+    )
+    if account is None:
+        flash("Selected bank account is not valid for this member.", "error")
+        return redirect(url_for("manage_fixed_expenses", member_id=member_id))
+
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO fixed_expenses (member_id, bank_account_id, title, amount, note)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (member_id, bank_account_id, title, amount, note or None),
+    )
+    db.commit()
+
+    flash(f"Fixed expense '{title}' added.", "success")
+    return redirect(url_for("manage_fixed_expenses", member_id=member_id))
+
+
+@app.route("/fixed-expenses/<int:fixed_expense_id>/edit", methods=["GET", "POST"])
+def edit_fixed_expense(fixed_expense_id: int):
+    fixed_expense = query_one(
+        """
+        SELECT
+            f.id,
+            f.member_id,
+            f.bank_account_id,
+            f.title,
+            f.amount,
+            f.note,
+            m.full_name
+        FROM fixed_expenses f
+        JOIN family_members m ON m.id = f.member_id
+        WHERE f.id = ?
+        """,
+        (fixed_expense_id,),
+    )
+    if fixed_expense is None:
+        abort(404)
+
+    member_id = int(fixed_expense["member_id"])
+
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()
+        note = request.form.get("note", "").strip()
+        amount_raw = request.form.get("amount", "").strip()
+        bank_account_id_raw = request.form.get("bank_account_id", "").strip()
+
+        if not title:
+            flash("Please provide a fixed expense title.", "error")
+            return redirect(url_for("edit_fixed_expense", fixed_expense_id=fixed_expense_id))
+
+        try:
+            amount = round(float(amount_raw), 2)
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            flash("Amount must be a positive number.", "error")
+            return redirect(url_for("edit_fixed_expense", fixed_expense_id=fixed_expense_id))
+
+        try:
+            bank_account_id = int(bank_account_id_raw)
+        except ValueError:
+            flash("Please select a bank account.", "error")
+            return redirect(url_for("edit_fixed_expense", fixed_expense_id=fixed_expense_id))
+
+        account = query_one(
+            """
+            SELECT id
+            FROM bank_accounts
+            WHERE id = ? AND member_id = ?
+            """,
+            (bank_account_id, member_id),
+        )
+        if account is None:
+            flash("Selected bank account is not valid for this member.", "error")
+            return redirect(url_for("edit_fixed_expense", fixed_expense_id=fixed_expense_id))
+
+        db = get_db()
+        db.execute(
+            """
+            UPDATE fixed_expenses
+            SET title = ?, amount = ?, note = ?, bank_account_id = ?
+            WHERE id = ?
+            """,
+            (title, amount, note or None, bank_account_id, fixed_expense_id),
+        )
+        db.commit()
+
+        flash("Fixed expense updated.", "success")
+        return redirect(url_for("manage_fixed_expenses", member_id=member_id))
+
+    accounts = query_all(
+        """
+        SELECT id, account_name, bank_name, account_identifier
+        FROM bank_accounts
+        WHERE member_id = ?
+        ORDER BY id DESC
+        """,
+        (member_id,),
+    )
+
+    return render_template(
+        "fixed_expense_edit.html",
+        fixed_expense=fixed_expense,
+        accounts=accounts,
+    )
+
+
+@app.post("/fixed-expenses/<int:fixed_expense_id>/delete")
+def delete_fixed_expense(fixed_expense_id: int):
+    row = query_one(
+        """
+        SELECT id, member_id, title
+        FROM fixed_expenses
+        WHERE id = ?
+        """,
+        (fixed_expense_id,),
+    )
+    if row is None:
+        abort(404)
+
+    db = get_db()
+    db.execute("DELETE FROM fixed_expenses WHERE id = ?", (fixed_expense_id,))
+    db.commit()
+
+    flash(f"Removed fixed expense '{row['title']}'.", "success")
+    return redirect(url_for("manage_fixed_expenses", member_id=row["member_id"]))
 
 
 @app.post("/member/<int:member_id>/transactions")
@@ -593,6 +856,7 @@ def add_transaction(member_id: int):
     transaction_date = request.form.get("transaction_date", "").strip() or date.today().isoformat()
     amount_raw = request.form.get("amount", "").strip()
     bank_account_id_raw = request.form.get("bank_account_id", "").strip()
+    fixed_expense_id_raw = request.form.get("fixed_expense_id", "").strip()
 
     if kind not in {"income", "expense"}:
         flash("Invalid transaction type.", "error")
@@ -630,8 +894,58 @@ def add_transaction(member_id: int):
         flash("Selected bank account is not valid for this member.", "error")
         return redirect(url_for("member_detail", member_id=member_id))
 
+    linked_fixed_expense = None
+    if fixed_expense_id_raw:
+        try:
+            fixed_expense_id = int(fixed_expense_id_raw)
+        except ValueError:
+            flash("Invalid fixed expense selection.", "error")
+            return redirect(url_for("member_detail", member_id=member_id))
+
+        linked_fixed_expense = query_one(
+            """
+            SELECT id, member_id, bank_account_id, title, amount, note
+            FROM fixed_expenses
+            WHERE id = ? AND member_id = ?
+            """,
+            (fixed_expense_id, member_id),
+        )
+        if linked_fixed_expense is None:
+            flash("Selected fixed expense does not exist for this member.", "error")
+            return redirect(url_for("member_detail", member_id=member_id))
+
+        if kind != "expense":
+            flash("A fixed expense can only be linked to an expense transaction.", "error")
+            return redirect(url_for("member_detail", member_id=member_id))
+
+        if int(linked_fixed_expense["bank_account_id"]) != bank_account_id:
+            flash("This fixed expense belongs to a different bank account.", "error")
+            return redirect(url_for("member_detail", member_id=member_id))
+
+        status = query_one(
+            """
+            SELECT is_paid, transaction_id
+            FROM fixed_expense_status
+            WHERE fixed_expense_id = ? AND month_key = ?
+            """,
+            (fixed_expense_id, current_month_key()),
+        )
+        if status is not None and int(status["is_paid"]) == 1 and status["transaction_id"] is not None:
+            existing_tx = query_one(
+                "SELECT id FROM transactions WHERE id = ?",
+                (status["transaction_id"],),
+            )
+            if existing_tx is not None:
+                flash("This fixed expense is already paid for the current month.", "error")
+                return redirect(url_for("member_detail", member_id=member_id))
+
+        if not category:
+            category = str(linked_fixed_expense["title"])
+        if not note:
+            note = str(linked_fixed_expense["note"] or "Monthly fixed expense")
+
     db = get_db()
-    db.execute(
+    cursor = db.execute(
         """
         INSERT INTO transactions (member_id, bank_account_id, kind, category, amount, note, transaction_date)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -646,138 +960,9 @@ def add_transaction(member_id: int):
             transaction_date,
         ),
     )
-    db.commit()
+    transaction_id = int(cursor.lastrowid)
 
-    action = "Income added" if kind == "income" else "Expense added"
-    flash(f"{action} in account '{account['account_name']}' for {member['full_name']}.", "success")
-    return redirect(url_for("member_detail", member_id=member_id, tab="transactions"))
-
-
-@app.post("/member/<int:member_id>/fixed-expenses")
-def add_fixed_expense(member_id: int):
-    member = query_one("SELECT id, full_name FROM family_members WHERE id = ?", (member_id,))
-    if member is None:
-        abort(404)
-
-    title = request.form.get("title", "").strip()
-    note = request.form.get("note", "").strip()
-    amount_raw = request.form.get("amount", "").strip()
-    bank_account_id_raw = request.form.get("bank_account_id", "").strip()
-
-    if not title:
-        flash("Please provide a fixed expense title.", "error")
-        return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
-
-    try:
-        amount = round(float(amount_raw), 2)
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        flash("Amount must be a positive number.", "error")
-        return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
-
-    try:
-        bank_account_id = int(bank_account_id_raw)
-    except ValueError:
-        flash("Please select a bank account.", "error")
-        return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
-
-    account = query_one(
-        """
-        SELECT id, account_name
-        FROM bank_accounts
-        WHERE id = ? AND member_id = ?
-        """,
-        (bank_account_id, member_id),
-    )
-    if account is None:
-        flash("Selected bank account is not valid for this member.", "error")
-        return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
-
-    db = get_db()
-    db.execute(
-        """
-        INSERT INTO fixed_expenses (member_id, bank_account_id, title, amount, note)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (member_id, bank_account_id, title, amount, note or None),
-    )
-    db.commit()
-
-    flash(f"Fixed monthly expense '{title}' added.", "success")
-    return redirect(url_for("member_detail", member_id=member_id, tab="fixed"))
-
-
-@app.post("/fixed-expenses/<int:fixed_expense_id>/toggle")
-def toggle_fixed_expense(fixed_expense_id: int):
-    desired_state = request.form.get("desired_state", "").strip().lower()
-    if desired_state not in {"paid", "unpaid"}:
-        flash("Invalid fixed expense action.", "error")
-        return redirect(url_for("index"))
-
-    fixed_expense = query_one(
-        """
-        SELECT
-            f.id,
-            f.member_id,
-            f.bank_account_id,
-            f.title,
-            f.amount,
-            f.note,
-            b.account_name
-        FROM fixed_expenses f
-        JOIN bank_accounts b ON b.id = f.bank_account_id
-        WHERE f.id = ?
-        """,
-        (fixed_expense_id,),
-    )
-    if fixed_expense is None:
-        abort(404)
-
-    db = get_db()
-    month_key = current_month_key()
-    today_iso = date.today().isoformat()
-
-    status = query_one(
-        """
-        SELECT id, is_paid, transaction_id
-        FROM fixed_expense_status
-        WHERE fixed_expense_id = ? AND month_key = ?
-        """,
-        (fixed_expense_id, month_key),
-    )
-
-    if desired_state == "paid":
-        already_paid = False
-        if status is not None and int(status["is_paid"]) == 1 and status["transaction_id"] is not None:
-            tx_exists = query_one(
-                "SELECT id FROM transactions WHERE id = ?",
-                (status["transaction_id"],),
-            )
-            already_paid = tx_exists is not None
-
-        if already_paid:
-            flash("This fixed expense is already marked as paid for this month.", "success")
-            return redirect(url_for("member_detail", member_id=fixed_expense["member_id"], tab="fixed"))
-
-        cursor = db.execute(
-            """
-            INSERT INTO transactions (
-                member_id, bank_account_id, kind, category, amount, note, transaction_date
-            )
-            VALUES (?, ?, 'expense', ?, ?, ?, ?)
-            """,
-            (
-                fixed_expense["member_id"],
-                fixed_expense["bank_account_id"],
-                fixed_expense["title"],
-                fixed_expense["amount"],
-                fixed_expense["note"] or "Monthly fixed expense",
-                today_iso,
-            ),
-        )
-        transaction_id = int(cursor.lastrowid)
-
+    if linked_fixed_expense is not None:
         db.execute(
             """
             INSERT INTO fixed_expense_status (
@@ -790,59 +975,26 @@ def toggle_fixed_expense(fixed_expense_id: int):
                 paid_date = excluded.paid_date,
                 transaction_id = excluded.transaction_id
             """,
-            (fixed_expense_id, month_key, today_iso, transaction_id),
+            (
+                int(linked_fixed_expense["id"]),
+                current_month_key(),
+                transaction_date,
+                transaction_id,
+            ),
         )
-        db.commit()
 
+    db.commit()
+
+    if linked_fixed_expense is not None:
         flash(
-            f"Marked '{fixed_expense['title']}' as paid in account '{fixed_expense['account_name']}'.",
+            f"Expense recorded and checklist item '{linked_fixed_expense['title']}' was marked as paid.",
             "success",
         )
-        return redirect(url_for("member_detail", member_id=fixed_expense["member_id"], tab="fixed"))
+    else:
+        action = "Income added" if kind == "income" else "Expense added"
+        flash(f"{action} in account '{account['account_name']}' for {member['full_name']}.", "success")
 
-    # unpaid
-    if status is not None and status["transaction_id"] is not None:
-        db.execute("DELETE FROM transactions WHERE id = ?", (status["transaction_id"],))
-
-    db.execute(
-        """
-        INSERT INTO fixed_expense_status (
-            fixed_expense_id, month_key, is_paid, paid_date, transaction_id
-        )
-        VALUES (?, ?, 0, NULL, NULL)
-        ON CONFLICT(fixed_expense_id, month_key)
-        DO UPDATE SET
-            is_paid = 0,
-            paid_date = NULL,
-            transaction_id = NULL
-        """,
-        (fixed_expense_id, month_key),
-    )
-    db.commit()
-
-    flash(f"Marked '{fixed_expense['title']}' as unpaid for this month.", "success")
-    return redirect(url_for("member_detail", member_id=fixed_expense["member_id"], tab="fixed"))
-
-
-@app.post("/fixed-expenses/<int:fixed_expense_id>/delete")
-def delete_fixed_expense(fixed_expense_id: int):
-    row = query_one(
-        """
-        SELECT id, member_id, title
-        FROM fixed_expenses
-        WHERE id = ?
-        """,
-        (fixed_expense_id,),
-    )
-    if row is None:
-        abort(404)
-
-    db = get_db()
-    db.execute("DELETE FROM fixed_expenses WHERE id = ?", (fixed_expense_id,))
-    db.commit()
-
-    flash(f"Removed fixed expense '{row['title']}'.", "success")
-    return redirect(url_for("member_detail", member_id=row["member_id"], tab="fixed"))
+    return redirect(url_for("member_detail", member_id=member_id))
 
 
 @app.post("/transactions/<int:transaction_id>/delete")
@@ -869,7 +1021,7 @@ def delete_transaction(transaction_id: int):
     db.commit()
 
     flash("Transaction removed.", "success")
-    return redirect(url_for("member_detail", member_id=row["member_id"], tab="transactions"))
+    return redirect(url_for("member_detail", member_id=row["member_id"]))
 
 
 @app.post("/member/<int:member_id>/delete")
@@ -882,9 +1034,9 @@ def delete_member(member_id: int):
     db.execute("DELETE FROM family_members WHERE id = ?", (member_id,))
     db.commit()
 
-    flash(f"Removed {row['full_name']} and all related accounts and transactions.", "success")
+    flash(f"Removed {row['full_name']} and all related accounts, fixed expenses and transactions.", "success")
     return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=8001, debug=True)
